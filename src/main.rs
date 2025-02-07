@@ -49,9 +49,21 @@ struct ProxyInfo {
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        help = "代理合约地址或Beacon地址",
+        long_help = "输入要查询的合约地址：\n- TransparentProxy/UUPS：输入代理合约地址\n- BeaconProxy：输入UpgradeableBeacon地址\n地址格式：0x开头的42位十六进制字符"
+    )]
     proxy: String,
-    #[arg(short, long)]
+
+    #[arg(
+        short,
+        long,
+        help = "RPC节点URL",
+        long_help = "以太坊RPC节点URL，例如：\n- 本地节点：http://localhost:8545\n- Infura: https://mainnet.infura.io/v3/YOUR-PROJECT-ID",
+        default_value = "http://localhost:8545"
+    )]
     rpc: String,
 }
 
