@@ -1,0 +1,24 @@
+# RPC配置文件
+# 格式: [链名称]
+# url = ["RPC链接1", "RPC链接2", ...]
+
+[ethereum]
+url = [
+    "https://eth.llamarpc.com",
+    "https://eth.rpc.blxrbdn.com",
+    "https://ethereum.publicnode.com",
+]
+
+[arbitrum]
+url = [
+    "https://arbitrum.llamarpc.com",
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one.public.blastapi.io",
+]
+
+[optimism]
+url = [
+    "https://optimism.llamarpc.com",
+    "https://mainnet.optimism.io",
+    "https://optimism.publicnode.com",
+]

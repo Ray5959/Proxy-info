@@ -1,5 +1,4 @@
 use ethers::{
-    prelude::*,
     providers::{Http, Provider},
     types::{H256, Address},
     middleware::Middleware,
@@ -8,6 +7,111 @@ use clap::Parser;
 use eyre::{Result, WrapErr};
 use log::{info, error, debug};
 use std::str::FromStr;
+use std::path::PathBuf;
+use std::fs;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct ChainConfig {
+    url: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcConfig {
+    #[serde(flatten)]
+    chains: std::collections::HashMap<String, ChainConfig>,
+}
+
+// RPC配置模板
+const RPC_CONFIG_TEMPLATE: &str = r#"# RPC配置文件
+# 格式: [链名称]
+# url = ["RPC链接1", "RPC链接2", ...]
+
+[ethereum]
+url = [
+    "https://eth.llamarpc.com",
+    "https://eth.rpc.blxrbdn.com",
+    "https://ethereum.publicnode.com",
+]
+
+[arbitrum]
+url = [
+    "https://arbitrum.llamarpc.com",
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one.public.blastapi.io",
+]
+
+[optimism]
+url = [
+    "https://optimism.llamarpc.com",
+    "https://mainnet.optimism.io",
+    "https://optimism.publicnode.com",
+]"#;
+
+// 获取配置文件路径
+fn get_config_path() -> Result<PathBuf> {
+    let exe_path = std::env::current_exe()?;
+    let exe_dir = exe_path.parent().ok_or_else(|| eyre::eyre!("无法获取程序目录"))?;
+    Ok(exe_dir.join("rpc.toml"))
+}
+
+// 加载RPC配置
+fn load_rpc_config() -> Result<RpcConfig> {
+    let config_path = get_config_path()?;
+    if !config_path.exists() {
+        info!("未找到RPC配置文件：");
+        info!("  {}", config_path.display());
+        info!("正在创建模板...");
+        fs::write(&config_path, RPC_CONFIG_TEMPLATE)?;
+        println!("已创建RPC配置文件模板：");
+        println!("  {}", config_path.display());
+        println!("请编辑此文件添加您的RPC配置");
+        std::process::exit(0);
+    }
+
+    let config_str = fs::read_to_string(config_path)?;
+    let config: RpcConfig = toml::from_str(&config_str)?;
+    Ok(config)
+}
+
+// 获取可用的RPC提供者
+async fn get_provider(rpc_arg: Option<String>, chain_name: Option<String>) -> Result<Provider<Http>> {
+    // 如果提供了直接的RPC URL，优先使用它
+    if let Some(rpc_url) = rpc_arg {
+        return Ok(Provider::<Http>::try_from(rpc_url)?)
+    }
+
+    // 否则尝试从配置文件加载
+    let config = load_rpc_config()?;
+    
+    // 如果指定了链名称，使用对应的RPC
+    let chain_urls = if let Some(name) = chain_name {
+        config.chains.get(&name)
+            .ok_or_else(|| eyre::eyre!("未找到指定链的RPC配置: {}", name))?
+            .url.clone()
+    } else {
+        // 否则使用第一个可用的链
+        config.chains.values().next()
+            .ok_or_else(|| eyre::eyre!("RPC配置文件为空"))?
+            .url.clone()
+    };
+
+    // 尝试所有配置的RPC URL直到找到一个可用的
+    for url in chain_urls {
+        match Provider::<Http>::try_from(url.as_str()) {
+            Ok(provider) => {
+                // 测试连接
+                if provider.get_block_number().await.is_ok() {
+                    info!("使用RPC: {}", url);
+                    return Ok(provider);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    Err(eyre::eyre!("所有配置的RPC都无法连接"))
+}
 
 // 存储槽常量
 const IMPLEMENTATION_SLOT: &str = "360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
@@ -56,16 +160,31 @@ struct Args {
         help = "代理合约地址或Beacon地址",
         long_help = "输入要查询的合约地址：\n- TransparentProxy/UUPS：输入代理合约地址\n- BeaconProxy：输入UpgradeableBeacon地址\n地址格式：0x开头的42位十六进制字符"
     )]
-    proxy: String,
+    proxy: Option<String>,
 
     #[arg(
         short,
         long,
         help = "RPC节点URL",
         long_help = "以太坊RPC节点URL，例如：\n- 本地节点：http://localhost:8545\n- Infura: https://mainnet.infura.io/v3/YOUR-PROJECT-ID",
-        default_value = "http://localhost:8545"
     )]
-    rpc: String,
+    rpc: Option<String>,
+
+    #[arg(
+        short = 'n',
+        long,
+        help = "链名称",
+        long_help = "指定要使用的链名称，对应rpc.toml中的配置，例如：ethereum, arbitrum, optimism等"
+    )]
+    chain_name: Option<String>,
+
+    #[arg(
+        short = 'i',
+        long,
+        help = "初始化RPC配置",
+        long_help = "生成RPC配置文件模板。如果文件已存在，将不会覆盖。"
+    )]
+    init_config: bool,
 }
 
 // 格式化地址输出
@@ -298,9 +417,28 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let provider = Provider::<Http>::try_from(args.rpc)?;
+    // 如果是初始化配置命令
+    if args.init_config {
+        let config_path = get_config_path()?;
+        if config_path.exists() {
+            println!("RPC配置文件已存在：");
+            println!("  {}", config_path.display());
+            println!("如需重新生成，请先删除现有的配置文件");
+            return Ok(());
+        }
+        fs::write(&config_path, RPC_CONFIG_TEMPLATE)?;
+        println!("已创建RPC配置文件模板：");
+        println!("  {}", config_path.display());
+        println!("请编辑此文件添加您的RPC配置");
+        return Ok(());
+    }
 
-    let proxy_address = Address::from_str(&args.proxy)?;
+    // 检查必需的proxy参数
+    let proxy = args.proxy.ok_or_else(|| eyre::eyre!("请提供代理合约地址（使用 -p 或 --proxy 参数）"))?;
+    
+    let provider = get_provider(args.rpc, args.chain_name).await?;
+
+    let proxy_address = Address::from_str(&proxy)?;
 
     let proxy_info = analyze_proxy(proxy_address, &provider).await?;
 
